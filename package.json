@@ -1,0 +1,14 @@
+```json
+{
+  "name": "videosaver-backend",
+  "version": "1.0.0",
+  "description": "VideoSaver backend API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
+```
