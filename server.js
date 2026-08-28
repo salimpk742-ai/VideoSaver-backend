@@ -4,19 +4,14 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 
-// Allow requests from your GitHub Pages website
+// CORS
 app.use((req, res, next) => {
-res.header(
+res.setHeader(
 "Access-Control-Allow-Origin",
 "https://salimpk742-ai.github.io"
 );
-res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-res.header("Access-Control-Allow-Headers", "Content-Type");
-
-if (req.method === "OPTIONS") {
-return res.sendStatus(204);
-}
-
+res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 next();
 });
 
@@ -32,11 +27,12 @@ message: "VideoSaver backend is running."
 });
 
 // Test download endpoint
-app.post("/download", (req, res) => {
-const { url } = req.body;
+app.get("/download", (req, res) => {
+const url = req.query.url;
 
 if (!url) {
 return res.status(400).json({
+success: false,
 error: "Video URL is required."
 });
 }
