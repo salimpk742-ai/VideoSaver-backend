@@ -1,469 +1,382 @@
-```javascript
 const express = require("express");
 
 const app = express();
 
-const PORT = process.env.PORT || 3000;
+app.use(express.json());
 
-const GRABSOCIAL_API =
-  "https://grabsocial.org/api/download";
-
-
-// ======================================================
-// CORS
-// ======================================================
-
-const allowedOrigins = [
-  "https://salimpk742-ai.github.io",
-  "https://video-saver-orcin.vercel.app"
-];
+/* =========================
+   CORS
+========================= */
 
 app.use((req, res, next) => {
+  const allowedOrigins = [
+    "https://salimpk742-ai.github.io",
+    "https://video-saver-orcin.vercel.app"
+  ];
 
   const origin = req.headers.origin;
 
   if (allowedOrigins.includes(origin)) {
-    res.setHeader(
-      "Access-Control-Allow-Origin",
-      origin
-    );
+    res.setHeader("Access-Control-Allow-Origin", origin);
   }
 
   res.setHeader(
     "Access-Control-Allow-Methods",
-    "GET, OPTIONS"
+    "GET, POST, OPTIONS"
   );
 
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Range"
-  );
-
-  res.setHeader(
-    "Access-Control-Expose-Headers",
-    "Content-Length, Content-Range, Accept-Ranges, Content-Type, Content-Disposition"
-  );
-
-  res.setHeader(
-    "Access-Control-Max-Age",
-    "86400"
+    "Content-Type, Accept"
   );
 
   if (req.method === "OPTIONS") {
-    return res.sendStatus(204);
+    return res.status(204).end();
   }
 
   next();
 });
 
 
-app.use(express.json());
-
-
-// ======================================================
-// HOME
-// ======================================================
+/* =========================
+   HOME
+========================= */
 
 app.get("/", (req, res) => {
-
   res.json({
     name: "VideoSaver API",
     status: "online",
     service: "ReelGrab",
-    proxyEnabled: true
+    version: "2.0"
   });
-
 });
 
 
-// ======================================================
-// HEALTH
-// ======================================================
+/* =========================
+   HEALTH
+========================= */
 
 app.get("/health", (req, res) => {
-
   res.json({
     status: "ok",
     service: "ReelGrab",
-    apiKeyRequired: false,
     proxyEnabled: true
   });
-
 });
 
 
-// ======================================================
-// GET VIDEO INFORMATION
-// ======================================================
+/* =========================
+   DOWNLOAD INFORMATION
+========================= */
 
 app.get("/download", async (req, res) => {
-
   try {
-
-    const url =
-      typeof req.query.url === "string"
-        ? req.query.url.trim()
-        : "";
+    const url = req.query.url;
 
     if (!url) {
-
       return res.status(400).json({
         success: false,
         error: "Video URL is required."
       });
-
     }
 
-
-    // Basic URL validation
     let parsedUrl;
 
     try {
-
       parsedUrl = new URL(url);
-
     } catch {
-
       return res.status(400).json({
         success: false,
         error: "Invalid video URL."
       });
-
     }
 
+    const supportedHosts = [
+      "youtube.com",
+      "youtu.be",
+      "instagram.com",
+      "facebook.com",
+      "fb.watch",
+      "tiktok.com"
+    ];
 
-    if (
-      parsedUrl.protocol !== "http:" &&
-      parsedUrl.protocol !== "https:"
-    ) {
+    const hostname = parsedUrl.hostname
+      .toLowerCase()
+      .replace(/^www\./, "");
 
-      return res.status(400).json({
-        success: false,
-        error: "Only HTTP and HTTPS URLs are supported."
-      });
-
-    }
-
-
-    // Ask ReelGrab / GrabSocial for the media
-    const response = await fetch(
-      GRABSOCIAL_API,
-      {
-        method: "POST",
-
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "application/json"
-        },
-
-        body: JSON.stringify({
-          url: url
-        })
-      }
+    const supported = supportedHosts.some(
+      host =>
+        hostname === host ||
+        hostname.endsWith("." + host)
     );
 
+    if (!supported) {
+      return res.status(400).json({
+        success: false,
+        error: "Unsupported platform."
+      });
+    }
 
-    // IMPORTANT:
-    // Read the response body ONLY ONCE.
-    const text =
-      await response.text();
 
+    /* =========================
+       CALL GRABSOCIAL
+    ========================= */
+
+    const controller = new AbortController();
+
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, 30000);
+
+
+    let response;
+
+    try {
+      response = await fetch(
+        "https://grabsocial.org/api/download",
+        {
+          method: "POST",
+
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+          },
+
+          body: JSON.stringify({
+            url: url
+          }),
+
+          signal: controller.signal
+        }
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+
+
+    const text = await response.text();
 
     let data;
 
     try {
-
-      data =
-        JSON.parse(text);
-
+      data = JSON.parse(text);
     } catch {
-
       return res.status(502).json({
-
         success: false,
-
-        error:
-          "ReelGrab returned invalid JSON.",
-
-        reelGrabStatus:
-          response.status,
-
-        reelGrabResponse:
-          text.substring(0, 1000)
-
+        error: "Download service returned invalid JSON.",
+        upstreamStatus: response.status
       });
-
     }
 
 
-    if (
-      !response.ok ||
-      data.success === false
-    ) {
-
-      return res.status(
-        response.status >= 400
-          ? response.status
-          : 422
-      ).json({
-
+    if (!response.ok) {
+      return res.status(502).json({
         success: false,
+        error: "Download service returned an error.",
+        upstreamStatus: response.status,
+        upstream: data
+      });
+    }
 
+
+    if (data.success === false) {
+      return res.status(422).json({
+        success: false,
         error:
           data.error ||
-          "Unable to retrieve this video.",
-
-        reelGrabStatus:
-          response.status,
-
-        reelGrabResponse:
-          data
-
+          "The video could not be processed."
       });
-
     }
 
 
     const downloadLinks =
       Array.isArray(data.downloadLinks)
         ? data.downloadLinks
+            .filter(
+              item =>
+                item &&
+                typeof item.url === "string" &&
+                item.url.trim() !== ""
+            )
+            .map(item => ({
+              quality: item.quality || "Video",
+              format: item.format || "mp4",
+              url: item.url,
+              formatId: item.formatId || "",
+              size: item.size || null,
+              referer: item.referer || null
+            }))
         : [];
 
 
-    // Keep only actual URLs
-    const validLinks =
-      downloadLinks.filter(
-        link =>
-          link &&
-          typeof link.url === "string" &&
-          link.url.trim() !== ""
-      );
-
-
-    if (validLinks.length === 0) {
-
+    if (downloadLinks.length === 0) {
       return res.status(502).json({
-
         success: false,
-
         error:
           "The video was detected, but no downloadable file was returned.",
-
-        platform:
-          data.platform || null,
-
-        title:
-          data.title || null,
-
-        downloadLinks:
-          downloadLinks
-
+        platform: data.platform || null,
+        title: data.title || null
       });
-
     }
 
 
-    // Return information to frontend.
-    //
-    // IMPORTANT:
-    // We return the original media URL to the frontend
-    // only as an internal value used to construct /proxy.
-    //
-    // The frontend will NEVER navigate directly to it.
-
     return res.json({
-
       success: true,
 
-      title:
-        data.title || "",
+      title: data.title || "Video",
 
-      thumbnail:
-        data.thumbnail || "",
+      thumbnail: data.thumbnail || "",
 
-      duration:
-        data.duration || null,
+      duration: data.duration || null,
 
-      author:
-        data.author || "",
+      author: data.author || "",
 
-      platform:
-        data.platform || "",
+      platform: data.platform || "",
 
-      pageUrl:
-        data.pageUrl || url,
+      pageUrl: data.pageUrl || url,
 
-      caption:
-        data.caption || null,
+      caption: data.caption || null,
 
-      downloadLinks:
-        validLinks
-
+      downloadLinks: downloadLinks
     });
-
 
   } catch (error) {
 
-    console.error(
-      "Download information error:",
-      error
-    );
+    console.error("DOWNLOAD ERROR:", error);
+
+    if (error.name === "AbortError") {
+      return res.status(504).json({
+        success: false,
+        error: "The download service took too long to respond."
+      });
+    }
 
     return res.status(500).json({
-
       success: false,
-
       error:
         error.message ||
-        "Unable to process video."
-
+        "Internal server error."
     });
-
   }
-
 });
 
 
-// ======================================================
-// MEDIA PROXY
-// ======================================================
-//
-// Browser requests:
-//
-// /proxy?url=MEDIA_URL
-//
-// Server fetches MEDIA_URL.
-//
-// Browser NEVER navigates directly to TikTok/Instagram.
-// ======================================================
+/* =========================
+   PROXY
+========================= */
 
 app.get("/proxy", async (req, res) => {
-
   try {
 
-    const mediaUrl =
-      typeof req.query.url === "string"
-        ? req.query.url.trim()
-        : "";
+    const videoUrl = req.query.url;
 
-
-    if (!mediaUrl) {
-
+    if (!videoUrl) {
       return res.status(400).json({
         success: false,
-        error: "Media URL is required."
+        error: "Video URL is required."
       });
-
     }
 
 
-    let parsedMediaUrl;
+    let parsed;
+
+    try {
+      parsed = new URL(videoUrl);
+    } catch {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid video URL."
+      });
+    }
+
+
+    /*
+      Only allow known media/CDN hosts.
+    */
+
+    const host = parsed.hostname.toLowerCase();
+
+    const allowedHosts = [
+      "tiktok.com",
+      "tiktokcdn.com",
+      "instagram.com",
+      "cdninstagram.com",
+      "fbcdn.net",
+      "facebook.com",
+      "googlevideo.com",
+      "youtube.com",
+      "youtu.be"
+    ];
+
+
+    const allowed = allowedHosts.some(
+      allowedHost =>
+        host === allowedHost ||
+        host.endsWith("." + allowedHost)
+    );
+
+
+    if (!allowed) {
+      return res.status(403).json({
+        success: false,
+        error: "Media host is not allowed."
+      });
+    }
+
+
+    const controller = new AbortController();
+
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, 60000);
+
+
+    let response;
 
     try {
 
-      parsedMediaUrl =
-        new URL(mediaUrl);
+      response = await fetch(videoUrl, {
+        method: "GET",
 
-    } catch {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36",
 
-      return res.status(400).json({
-        success: false,
-        error: "Invalid media URL."
+          "Accept":
+            "video/mp4,video/*,*/*;q=0.8",
+
+          "Referer":
+            req.query.referer || ""
+        },
+
+        signal: controller.signal
       });
 
+    } finally {
+      clearTimeout(timeout);
     }
 
 
-    if (
-      parsedMediaUrl.protocol !== "http:" &&
-      parsedMediaUrl.protocol !== "https:"
-    ) {
-
-      return res.status(400).json({
+    if (!response.ok) {
+      return res.status(502).json({
         success: false,
-        error: "Invalid media URL protocol."
-      });
-
-    }
-
-
-    // Forward Range header if the browser sends one.
-    const requestHeaders = {
-
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
-
-      "Accept":
-        "video/mp4,video/*,audio/*,*/*;q=0.8",
-
-      "Referer":
-        parsedMediaUrl.origin + "/"
-
-    };
-
-
-    if (req.headers.range) {
-
-      requestHeaders.Range =
-        req.headers.range;
-
-    }
-
-
-    const mediaResponse =
-      await fetch(
-        mediaUrl,
-        {
-          method: "GET",
-          headers: requestHeaders,
-          redirect: "follow"
-        }
-      );
-
-
-    if (!mediaResponse.ok) {
-
-      return res.status(
-        mediaResponse.status
-      ).json({
-
-        success: false,
-
         error:
           "The media server returned HTTP " +
-          mediaResponse.status
-
+          response.status
       });
-
     }
 
 
-    // --------------------------------------------------
-    // Response headers
-    // --------------------------------------------------
-
     const contentType =
-      mediaResponse.headers.get(
-        "content-type"
-      ) || "video/mp4";
+      response.headers.get("content-type") ||
+      "application/octet-stream";
 
 
     const contentLength =
-      mediaResponse.headers.get(
-        "content-length"
-      );
+      response.headers.get("content-length");
 
 
-    const contentRange =
-      mediaResponse.headers.get(
-        "content-range"
-      );
-
-
-    res.status(
-      mediaResponse.status
-    );
-
+    res.status(200);
 
     res.setHeader(
       "Content-Type",
@@ -472,143 +385,109 @@ app.get("/proxy", async (req, res) => {
 
 
     if (contentLength) {
-
       res.setHeader(
         "Content-Length",
         contentLength
       );
-
     }
 
 
-    if (contentRange) {
-
-      res.setHeader(
-        "Content-Range",
-        contentRange
-      );
-
-    }
-
-
-    res.setHeader(
-      "Accept-Ranges",
-      "bytes"
-    );
-
-
-    // Force download instead of opening TikTok/Instagram
     res.setHeader(
       "Content-Disposition",
       'attachment; filename="VideoSaver-video.mp4"'
     );
 
 
-    // --------------------------------------------------
-    // Stream response
-    // --------------------------------------------------
-
-    if (!mediaResponse.body) {
-
-      const buffer =
-        Buffer.from(
-          await mediaResponse.arrayBuffer()
-        );
-
-      return res.end(buffer);
-
-    }
-
-
-    // Convert Web ReadableStream into Node stream
-    const reader =
-      mediaResponse.body.getReader();
-
-
-    try {
-
-      while (true) {
-
-        const {
-          done,
-          value
-        } =
-          await reader.read();
-
-
-        if (done) {
-          break;
-        }
-
-
-        res.write(
-          Buffer.from(value)
-        );
-
-      }
-
-      res.end();
-
-    } catch (streamError) {
-
-      console.error(
-        "Proxy streaming error:",
-        streamError
-      );
-
-      if (!res.headersSent) {
-
-        return res.status(502).json({
-
-          success: false,
-
-          error:
-            "Media streaming failed."
-
-        });
-
-      }
-
-      res.end();
-
-    }
-
-  } catch (error) {
-
-    console.error(
-      "Proxy error:",
-      error
+    res.setHeader(
+      "Cache-Control",
+      "no-store"
     );
 
 
-    if (!res.headersSent) {
+    /*
+      Stream the video directly.
+      We do NOT use response.json()
+      and we do NOT read the body twice.
+    */
 
-      return res.status(500).json({
+    if (response.body) {
 
+      const reader =
+        response.body.getReader();
+
+      try {
+
+        while (true) {
+
+          const {
+            done,
+            value
+          } = await reader.read();
+
+          if (done) {
+            break;
+          }
+
+          res.write(
+            Buffer.from(value)
+          );
+        }
+
+      } finally {
+
+        try {
+          reader.releaseLock();
+        } catch {}
+
+      }
+
+      return res.end();
+    }
+
+
+    const buffer =
+      Buffer.from(
+        await response.arrayBuffer()
+      );
+
+    return res.end(buffer);
+
+  } catch (error) {
+
+    console.error("PROXY ERROR:", error);
+
+    if (error.name === "AbortError") {
+      return res.status(504).json({
         success: false,
+        error: "Media download timed out."
+      });
+    }
 
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
         error:
           error.message ||
           "Unable to download media."
-
       });
-
     }
 
+    res.end();
   }
-
 });
 
 
-// ======================================================
-// START SERVER
-// ======================================================
+/* =========================
+   VERCEL EXPORT
+========================= */
 
-app.listen(PORT, () => {
+/*
+  IMPORTANT:
 
-  console.log(
-    `VideoSaver API running on port ${PORT}`
-  );
+  Do NOT use app.listen() here.
 
-});
-```
+  Vercel runs Express as a serverless
+  function.
+*/
+
+module.exports = app;
