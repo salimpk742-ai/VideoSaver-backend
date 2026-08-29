@@ -3,9 +3,14 @@ const express = require("express");
 const app = express();
 
 const PORT = process.env.PORT || 3000;
-const API_KEY = process.env.YOINKU_API_KEY;
+
+
+// ===============================
+// CORS
+// ===============================
 
 app.use((req, res, next) => {
+
   const allowedOrigins = [
     "https://salimpk742-ai.github.io",
     "https://video-saver-orcin.vercel.app"
@@ -14,7 +19,10 @@ app.use((req, res, next) => {
   const origin = req.headers.origin;
 
   if (allowedOrigins.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader(
+      "Access-Control-Allow-Origin",
+      origin
+    );
   }
 
   res.setHeader(
@@ -34,29 +42,44 @@ app.use((req, res, next) => {
   next();
 });
 
+
 app.use(express.json());
 
 
+// ===============================
 // HOME
+// ===============================
+
 app.get("/", (req, res) => {
+
   res.json({
     name: "VideoSaver API",
     status: "online",
-    service: "Yoinku"
+    service: "ReelGrab"
   });
+
 });
 
 
+// ===============================
 // HEALTH
+// ===============================
+
 app.get("/health", (req, res) => {
+
   res.json({
     status: "ok",
-    yoinkuConfigured: Boolean(API_KEY)
+    service: "ReelGrab",
+    apiKeyRequired: false
   });
+
 });
 
 
-// DOWNLOAD / INFO
+// ===============================
+// DOWNLOAD
+// ===============================
+
 app.get("/download", async (req, res) => {
 
   try {
@@ -64,126 +87,95 @@ app.get("/download", async (req, res) => {
     const url = req.query.url;
 
     if (!url) {
+
       return res.status(400).json({
         success: false,
         error: "Video URL is required."
       });
-    }
 
-    if (!API_KEY) {
-      return res.status(500).json({
-        success: false,
-        error: "YOINKU_API_KEY is not configured."
-      });
     }
 
 
-    // Ask Yoinku for video information
-    const infoUrl =
-      "https://yoinku.com/api/v1/info?url=" +
-      encodeURIComponent(url);
+    // ReelGrab API
+    const apiUrl =
+      "https://grabsocial.org/api/download";
 
 
-    const infoResponse = await fetch(
-      infoUrl,
+    const response = await fetch(
+      apiUrl,
       {
-        method: "GET",
+        method: "POST",
+
         headers: {
-          "x-api-key": API_KEY
-        }
+          "Content-Type":
+            "application/json"
+        },
+
+        body: JSON.stringify({
+          url: url
+        })
       }
     );
 
 
-    const infoText =
-      await infoResponse.text();
+    // Read body only once
+    const responseText =
+      await response.text();
 
 
-    let infoData;
+    let data;
 
     try {
-      infoData = JSON.parse(infoText);
+
+      data =
+        JSON.parse(responseText);
+
     } catch {
+
       return res.status(502).json({
+
         success: false,
-        error: "Yoinku returned invalid JSON.",
-        yoinkuStatus: infoResponse.status,
-        yoinkuResponse: infoText
+
+        error:
+          "ReelGrab returned an invalid response.",
+
+        reelGrabStatus:
+          response.status,
+
+        reelGrabResponse:
+          responseText
+
       });
+
     }
 
 
-    if (!infoResponse.ok || !infoData.ok) {
-      return res.status(infoResponse.status).json({
+    // ReelGrab error
+
+    if (!response.ok || data.success === false) {
+
+      return res.status(
+        response.status >= 400
+          ? response.status
+          : 422
+      ).json({
+
         success: false,
-        yoinkuStatus: infoResponse.status,
-        yoinkuResponse: infoData
+
+        reelGrabStatus:
+          response.status,
+
+        reelGrabResponse:
+          data
+
       });
+
     }
 
 
-    /*
-      Yoinku returns formats such as:
+    // Return ReelGrab result directly
 
-      v-1080
-      v-720
-      v-360
-      a-mp3
-      a-m4a
-    */
-
-    const videoData = infoData.data || {};
-
-    const formats = videoData.formats || [];
-
-
-    /*
-      Convert Yoinku formats into the format
-      your VideoSaver frontend expects.
-    */
-
-    const downloadLinks = formats.map(format => {
-
-      let quality = format.quality || format.id;
-
-      if (format.kind === "audio") {
-        quality = "Audio";
-      }
-
-      return {
-        quality: quality,
-        format: format.container || "mp4",
-        url:
-          `/download-file?url=${encodeURIComponent(url)}&format=${encodeURIComponent(format.id)}`,
-        formatId: format.id
-      };
-
-    });
-
-
-    return res.json({
-
-      success: true,
-
-      title:
-        videoData.title || "Video",
-
-      thumbnail:
-        videoData.thumbnailUrl || "",
-
-      duration:
-        videoData.durationSeconds || 0,
-
-      platform:
-        videoData.platform || "",
-
-      pageUrl:
-        url,
-
-      downloadLinks:
-        downloadLinks
-
-    });
+    return res.json(data);
 
 
   } catch (error) {
@@ -194,10 +186,13 @@ app.get("/download", async (req, res) => {
     );
 
     return res.status(500).json({
+
       success: false,
+
       error:
         error.message ||
         "Unable to process video."
+
     });
 
   }
@@ -205,118 +200,17 @@ app.get("/download", async (req, res) => {
 });
 
 
-// ACTUAL FILE DOWNLOAD
-app.get("/download-file", async (req, res) => {
-
-  try {
-
-    const url = req.query.url;
-    const format = req.query.format;
-
-    if (!url || !format) {
-      return res.status(400).json({
-        success: false,
-        error: "URL and format are required."
-      });
-    }
-
-    if (!API_KEY) {
-      return res.status(500).json({
-        success: false,
-        error: "YOINKU_API_KEY is not configured."
-      });
-    }
-
-
-    const downloadUrl =
-      "https://yoinku.com/api/v1/download?url=" +
-      encodeURIComponent(url) +
-      "&format=" +
-      encodeURIComponent(format);
-
-
-    const response = await fetch(
-      downloadUrl,
-      {
-        method: "GET",
-        headers: {
-          "x-api-key": API_KEY
-        }
-      }
-    );
-
-
-    /*
-      Yoinku returns JSON containing a
-      short-lived download URL.
-    */
-
-    const text =
-      await response.text();
-
-
-    let data;
-
-    try {
-      data = JSON.parse(text);
-    } catch {
-      return res.status(502).json({
-        success: false,
-        error: "Invalid response from Yoinku.",
-        response: text
-      });
-    }
-
-
-    if (!response.ok || !data.ok) {
-      return res.status(response.status).json({
-        success: false,
-        yoinkuStatus: response.status,
-        yoinkuResponse: data
-      });
-    }
-
-
-    if (!data.url) {
-      return res.status(502).json({
-        success: false,
-        error: "Yoinku did not return a download URL."
-      });
-    }
-
-
-    /*
-      Redirect the user's browser directly
-      to the temporary download file.
-    */
-
-    return res.redirect(data.url);
-
-
-  } catch (error) {
-
-    console.error(
-      "Download file error:",
-      error
-    );
-
-    return res.status(500).json({
-      success: false,
-      error:
-        error.message ||
-        "Unable to create download."
-    });
-
-  }
-
-});
-
+// ===============================
+// START SERVER
+// ===============================
 
 app.listen(
   PORT,
   () => {
+
     console.log(
       `VideoSaver API running on port ${PORT}`
     );
+
   }
 );
