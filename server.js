@@ -6,8 +6,13 @@ const PORT = process.env.PORT || 3000;
 
 const API_KEY = process.env.YOINKU_API_KEY;
 
-// Allow your frontend
+
+// ===============================
+// CORS
+// ===============================
+
 app.use((req, res, next) => {
+
   const allowedOrigins = [
     "https://salimpk742-ai.github.io",
     "https://video-saver-orcin.vercel.app"
@@ -16,7 +21,10 @@ app.use((req, res, next) => {
   const origin = req.headers.origin;
 
   if (allowedOrigins.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader(
+      "Access-Control-Allow-Origin",
+      origin
+    );
   }
 
   res.setHeader(
@@ -34,7 +42,9 @@ app.use((req, res, next) => {
   }
 
   next();
+
 });
+
 
 app.use(express.json());
 
@@ -44,23 +54,27 @@ app.use(express.json());
 // ===============================
 
 app.get("/", (req, res) => {
+
   res.json({
     name: "VideoSaver API",
     status: "online",
     service: "Yoinku"
   });
+
 });
 
 
 // ===============================
-// HEALTH CHECK
+// HEALTH
 // ===============================
 
 app.get("/health", (req, res) => {
+
   res.json({
     status: "ok",
     yoinkuConfigured: Boolean(API_KEY)
   });
+
 });
 
 
@@ -74,11 +88,14 @@ app.get("/download", async (req, res) => {
 
     const url = req.query.url;
 
+
     if (!url) {
+
       return res.status(400).json({
         success: false,
         error: "Video URL is required."
       });
+
     }
 
 
@@ -87,20 +104,16 @@ app.get("/download", async (req, res) => {
       return res.status(500).json({
         success: false,
         error:
-          "YOINKU_API_KEY is not configured in Vercel."
+          "YOINKU_API_KEY is not configured."
       });
 
     }
 
 
-    /*
-      Yoinku API
-
-      The URL is passed to Yoinku.
-    */
+    // Yoinku information endpoint
 
     const apiUrl =
-      "https://yoinku.com/en/api";
+      "https://yoinku.com/api/v1/info";
 
 
     const response = await fetch(
@@ -123,52 +136,74 @@ app.get("/download", async (req, res) => {
     );
 
 
+    /*
+      Read the response body ONLY ONCE.
+      This prevents:
+
+      Body is unusable:
+      Body has already been read
+    */
+
+    const responseText =
+      await response.text();
+
+
     let data;
 
     try {
 
-      data = await response.json();
+      data =
+        JSON.parse(
+          responseText
+        );
 
     } catch {
 
-      const text =
-        await response.text();
-
       return res.status(502).json({
+
         success: false,
+
         error:
           "Yoinku returned an invalid response.",
-        response: text
+
+        yoinkuStatus:
+          response.status,
+
+        yoinkuResponse:
+          responseText
+
       });
 
     }
 
 
-    /*
-      If Yoinku rejects the request,
-      return its response to the frontend.
-    */
+    // API error
 
     if (!response.ok) {
 
-      return res.status(response.status).json({
+      return res.status(
+        response.status
+      ).json({
+
         success: false,
-        yoinkuStatus: response.status,
-        yoinkuResponse: data
+
+        yoinkuStatus:
+          response.status,
+
+        yoinkuResponse:
+          data
+
       });
 
     }
 
 
-    /*
-      Return the API response directly.
+    // Return Yoinku response
 
-      This is important because Yoinku
-      may return different formats for
-      YouTube, Instagram, TikTok, etc.
-    */
+    return res.json(
+      data
+    );
 
-    return res.json(data);
 
   } catch (error) {
 
@@ -178,10 +213,13 @@ app.get("/download", async (req, res) => {
     );
 
     return res.status(500).json({
+
       success: false,
+
       error:
         error.message ||
         "Unable to process video."
+
     });
 
   }
