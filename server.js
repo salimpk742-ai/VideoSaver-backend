@@ -2,18 +2,19 @@ const express = require("express");
 
 const app = express();
 
-app.use(express.json());
+const PORT = process.env.PORT || 3000;
+const SNAPANY_API_KEY = process.env.SNAPANY_API_KEY;
 
-/* =========================
-   CORS
-========================= */
+// --------------------------------------------------
+// CORS
+// --------------------------------------------------
+
+const allowedOrigins = [
+  "https://salimpk742-ai.github.io",
+  "https://video-saver-orcin.vercel.app"
+];
 
 app.use((req, res, next) => {
-  const allowedOrigins = [
-    "https://salimpk742-ai.github.io",
-    "https://video-saver-orcin.vercel.app"
-  ];
-
   const origin = req.headers.origin;
 
   if (allowedOrigins.includes(origin)) {
@@ -30,48 +31,51 @@ app.use((req, res, next) => {
     "Content-Type, Accept"
   );
 
+  res.setHeader(
+    "Access-Control-Expose-Headers",
+    "Content-Disposition, Content-Type"
+  );
+
   if (req.method === "OPTIONS") {
-    return res.status(204).end();
+    return res.sendStatus(204);
   }
 
   next();
 });
 
+app.use(express.json());
 
-/* =========================
-   HOME
-========================= */
+// --------------------------------------------------
+// HOME
+// --------------------------------------------------
 
 app.get("/", (req, res) => {
   res.json({
     name: "VideoSaver API",
     status: "online",
-    service: "ReelGrab",
-    version: "2.0"
+    service: "SnapAny"
   });
 });
 
-
-/* =========================
-   HEALTH
-========================= */
+// --------------------------------------------------
+// HEALTH
+// --------------------------------------------------
 
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
-    service: "ReelGrab",
-    proxyEnabled: true
+    service: "SnapAny",
+    apiKeyConfigured: Boolean(SNAPANY_API_KEY)
   });
 });
 
-
-/* =========================
-   DOWNLOAD INFORMATION
-========================= */
+// --------------------------------------------------
+// DOWNLOAD / EXTRACT
+// --------------------------------------------------
 
 app.get("/download", async (req, res) => {
   try {
-    const url = req.query.url;
+    const url = String(req.query.url || "").trim();
 
     if (!url) {
       return res.status(400).json({
@@ -80,79 +84,31 @@ app.get("/download", async (req, res) => {
       });
     }
 
-    let parsedUrl;
-
-    try {
-      parsedUrl = new URL(url);
-    } catch {
-      return res.status(400).json({
+    if (!SNAPANY_API_KEY) {
+      return res.status(500).json({
         success: false,
-        error: "Invalid video URL."
+        error: "SNAPANY_API_KEY is not configured in Vercel."
       });
     }
 
-    const supportedHosts = [
-      "youtube.com",
-      "youtu.be",
-      "instagram.com",
-      "facebook.com",
-      "fb.watch",
-      "tiktok.com"
-    ];
+    // ------------------------------------------------
+    // Call SnapAny
+    // ------------------------------------------------
 
-    const hostname = parsedUrl.hostname
-      .toLowerCase()
-      .replace(/^www\./, "");
-
-    const supported = supportedHosts.some(
-      host =>
-        hostname === host ||
-        hostname.endsWith("." + host)
+    const response = await fetch(
+      "https://api.snapany.com/openapi/v1/extract/post",
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${SNAPANY_API_KEY}`,
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        },
+        body: JSON.stringify({
+          url: url
+        })
+      }
     );
-
-    if (!supported) {
-      return res.status(400).json({
-        success: false,
-        error: "Unsupported platform."
-      });
-    }
-
-
-    /* =========================
-       CALL GRABSOCIAL
-    ========================= */
-
-    const controller = new AbortController();
-
-    const timeout = setTimeout(() => {
-      controller.abort();
-    }, 30000);
-
-
-    let response;
-
-    try {
-      response = await fetch(
-        "https://grabsocial.org/api/download",
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-          },
-
-          body: JSON.stringify({
-            url: url
-          }),
-
-          signal: controller.signal
-        }
-      );
-    } finally {
-      clearTimeout(timeout);
-    }
-
 
     const text = await response.text();
 
@@ -163,226 +119,314 @@ app.get("/download", async (req, res) => {
     } catch {
       return res.status(502).json({
         success: false,
-        error: "Download service returned invalid JSON.",
-        upstreamStatus: response.status
+        error: "SnapAny returned invalid JSON.",
+        snapanyStatus: response.status
       });
     }
 
+    // ------------------------------------------------
+    // SnapAny error
+    // ------------------------------------------------
 
     if (!response.ok) {
-      return res.status(502).json({
-        success: false,
-        error: "Download service returned an error.",
-        upstreamStatus: response.status,
-        upstream: data
-      });
-    }
-
-
-    if (data.success === false) {
-      return res.status(422).json({
+      return res.status(response.status).json({
         success: false,
         error:
+          data.message ||
           data.error ||
-          "The video could not be processed."
+          "SnapAny could not process this URL.",
+        code: data.code || null,
+        snapanyStatus: response.status
       });
     }
 
+    // ------------------------------------------------
+    // Extract metadata
+    // ------------------------------------------------
 
-    const downloadLinks =
-      Array.isArray(data.downloadLinks)
-        ? data.downloadLinks
-            .filter(
-              item =>
-                item &&
-                typeof item.url === "string" &&
-                item.url.trim() !== ""
-            )
-            .map(item => ({
-              quality: item.quality || "Video",
-              format: item.format || "mp4",
-              url: item.url,
-              formatId: item.formatId || "",
-              size: item.size || null,
-              referer: item.referer || null
-            }))
+    const title =
+      data.title ||
+      data.post?.title ||
+      "Video";
+
+    const thumbnail =
+      data.thumbnail_url ||
+      data.thumbnail ||
+      data.post?.thumbnail_url ||
+      "";
+
+    const author =
+      data.author?.display_name ||
+      data.author?.name ||
+      data.author_name ||
+      "";
+
+    const canonicalUrl =
+      data.canonical_url ||
+      data.page_url ||
+      url;
+
+    // ------------------------------------------------
+    // SnapAny media array
+    // ------------------------------------------------
+
+    const medias = Array.isArray(data.medias)
+      ? data.medias
+      : [];
+
+    const downloadLinks = [];
+
+    // ------------------------------------------------
+    // Convert SnapAny media into our frontend format
+    // ------------------------------------------------
+
+    for (const media of medias) {
+      if (!media) continue;
+
+      const mediaType =
+        String(media.media_type || "").toLowerCase();
+
+      // Direct media URL
+      if (
+        media.resource_url &&
+        typeof media.resource_url === "string"
+      ) {
+        downloadLinks.push({
+          quality:
+            media.quality ||
+            media.resolution ||
+            "Original",
+          format:
+            media.format ||
+            (mediaType === "audio"
+              ? "m4a"
+              : "mp4"),
+          url: media.resource_url,
+          formatId:
+            media.format_id ||
+            media.id ||
+            "download",
+          size:
+            media.file_size ||
+            media.size ||
+            null,
+          headers:
+            media.headers ||
+            {}
+        });
+      }
+
+      // ------------------------------------------------
+      // Some SnapAny responses contain video variants
+      // ------------------------------------------------
+
+      const variants = Array.isArray(media.variants)
+        ? media.variants
         : [];
 
+      for (const variant of variants) {
+        if (!variant) continue;
 
-    if (downloadLinks.length === 0) {
-      return res.status(502).json({
-        success: false,
-        error:
-          "The video was detected, but no downloadable file was returned.",
-        platform: data.platform || null,
-        title: data.title || null
+        // Complete video URL
+        if (
+          variant.url &&
+          typeof variant.url === "string"
+        ) {
+          downloadLinks.push({
+            quality:
+              variant.quality ||
+              variant.resolution ||
+              "Video",
+            format:
+              variant.format ||
+              "mp4",
+            url: variant.url,
+            formatId:
+              variant.format_id ||
+              "variant",
+            size:
+              variant.file_size ||
+              variant.size ||
+              null,
+            headers:
+              variant.headers ||
+              media.headers ||
+              {}
+          });
+
+          continue;
+        }
+
+        // Video URL supplied separately
+        if (
+          variant.video_url &&
+          typeof variant.video_url === "string"
+        ) {
+          downloadLinks.push({
+            quality:
+              variant.quality ||
+              variant.resolution ||
+              "Video",
+            format:
+              variant.format ||
+              "mp4",
+            url: variant.video_url,
+            formatId:
+              variant.format_id ||
+              "video",
+            size:
+              variant.file_size ||
+              variant.size ||
+              null,
+            headers:
+              variant.headers ||
+              media.headers ||
+              {},
+            audioUrl:
+              variant.audio_url ||
+              null
+          });
+        }
+      }
+    }
+
+    // ------------------------------------------------
+    // Remove duplicate URLs
+    // ------------------------------------------------
+
+    const unique = [];
+    const seen = new Set();
+
+    for (const item of downloadLinks) {
+      if (!item.url) continue;
+
+      const cleanUrl = item.url.trim();
+
+      if (!cleanUrl) continue;
+
+      if (seen.has(cleanUrl)) continue;
+
+      seen.add(cleanUrl);
+
+      unique.push({
+        ...item,
+        url: cleanUrl
       });
     }
 
+    // ------------------------------------------------
+    // No usable media
+    // ------------------------------------------------
+
+    if (unique.length === 0) {
+      return res.status(502).json({
+        success: false,
+        error:
+          "SnapAny detected the content but did not return a downloadable media URL.",
+        title,
+        platform:
+          data.platform ||
+          data.site ||
+          null,
+        snapanyResponse: data
+      });
+    }
+
+    // ------------------------------------------------
+    // Return normalized response to frontend
+    // ------------------------------------------------
 
     return res.json({
       success: true,
-
-      title: data.title || "Video",
-
-      thumbnail: data.thumbnail || "",
-
-      duration: data.duration || null,
-
-      author: data.author || "",
-
-      platform: data.platform || "",
-
-      pageUrl: data.pageUrl || url,
-
-      caption: data.caption || null,
-
-      downloadLinks: downloadLinks
+      title,
+      thumbnail,
+      author,
+      platform:
+        data.platform ||
+        data.site ||
+        "",
+      pageUrl: canonicalUrl,
+      duration:
+        data.duration ||
+        data.post?.duration ||
+        null,
+      caption:
+        data.caption ||
+        data.text ||
+        data.post?.text ||
+        null,
+      downloadLinks: unique
     });
 
   } catch (error) {
-
-    console.error("DOWNLOAD ERROR:", error);
-
-    if (error.name === "AbortError") {
-      return res.status(504).json({
-        success: false,
-        error: "The download service took too long to respond."
-      });
-    }
+    console.error("SnapAny error:", error);
 
     return res.status(500).json({
       success: false,
       error:
         error.message ||
-        "Internal server error."
+        "Unable to process video."
     });
   }
 });
 
-
-/* =========================
-   PROXY
-========================= */
+// --------------------------------------------------
+// PROXY
+//
+// IMPORTANT:
+// We are NOT using this to proxy the whole video.
+// It is kept only for small/compatible requests.
+// Large video files should be downloaded directly
+// from SnapAny's temporary resource URL.
+// --------------------------------------------------
 
 app.get("/proxy", async (req, res) => {
   try {
+    const target = String(req.query.url || "").trim();
 
-    const videoUrl = req.query.url;
-
-    if (!videoUrl) {
+    if (!target) {
       return res.status(400).json({
         success: false,
-        error: "Video URL is required."
+        error: "Media URL is required."
       });
     }
 
+    const parsed = new URL(target);
 
-    let parsed;
-
-    try {
-      parsed = new URL(videoUrl);
-    } catch {
+    // Only allow HTTPS media URLs
+    if (parsed.protocol !== "https:") {
       return res.status(400).json({
         success: false,
-        error: "Invalid video URL."
+        error: "Only HTTPS media URLs are allowed."
       });
     }
 
-
-    /*
-      Only allow known media/CDN hosts.
-    */
-
-    const host = parsed.hostname.toLowerCase();
-
-    const allowedHosts = [
-      "tiktok.com",
-      "tiktokcdn.com",
-      "instagram.com",
-      "cdninstagram.com",
-      "fbcdn.net",
-      "facebook.com",
-      "googlevideo.com",
-      "youtube.com",
-      "youtu.be"
-    ];
-
-
-    const allowed = allowedHosts.some(
-      allowedHost =>
-        host === allowedHost ||
-        host.endsWith("." + allowedHost)
-    );
-
-
-    if (!allowed) {
-      return res.status(403).json({
-        success: false,
-        error: "Media host is not allowed."
-      });
-    }
-
-
-    const controller = new AbortController();
-
-    const timeout = setTimeout(() => {
-      controller.abort();
-    }, 60000);
-
-
-    let response;
-
-    try {
-
-      response = await fetch(videoUrl, {
-        method: "GET",
-
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36",
-
-          "Accept":
-            "video/mp4,video/*,*/*;q=0.8",
-
-          "Referer":
-            req.query.referer || ""
-        },
-
-        signal: controller.signal
-      });
-
-    } finally {
-      clearTimeout(timeout);
-    }
-
+    const response = await fetch(target, {
+      method: "GET",
+      redirect: "follow"
+    });
 
     if (!response.ok) {
-      return res.status(502).json({
+      return res.status(response.status).json({
         success: false,
         error:
-          "The media server returned HTTP " +
-          response.status
+          "Unable to retrieve the media file.",
+        upstreamStatus: response.status
       });
     }
 
-
     const contentType =
-      response.headers.get("content-type") ||
-      "application/octet-stream";
+      response.headers.get("content-type");
 
+    if (contentType) {
+      res.setHeader(
+        "Content-Type",
+        contentType
+      );
+    }
 
     const contentLength =
       response.headers.get("content-length");
-
-
-    res.status(200);
-
-    res.setHeader(
-      "Content-Type",
-      contentType
-    );
-
 
     if (contentLength) {
       res.setHeader(
@@ -391,84 +435,45 @@ app.get("/proxy", async (req, res) => {
       );
     }
 
+    if (!response.body) {
+      const buffer =
+        Buffer.from(
+          await response.arrayBuffer()
+        );
 
-    res.setHeader(
-      "Content-Disposition",
-      'attachment; filename="VideoSaver-video.mp4"'
-    );
+      return res.send(buffer);
+    }
 
+    // Stream the response when supported.
+    const reader =
+      response.body.getReader();
 
-    res.setHeader(
-      "Cache-Control",
-      "no-store"
-    );
+    const pump = async () => {
+      while (true) {
+        const { done, value } =
+          await reader.read();
 
+        if (done) break;
 
-    /*
-      Stream the video directly.
-      We do NOT use response.json()
-      and we do NOT read the body twice.
-    */
-
-    if (response.body) {
-
-      const reader =
-        response.body.getReader();
-
-      try {
-
-        while (true) {
-
-          const {
-            done,
-            value
-          } = await reader.read();
-
-          if (done) {
-            break;
-          }
-
-          res.write(
-            Buffer.from(value)
-          );
-        }
-
-      } finally {
-
-        try {
-          reader.releaseLock();
-        } catch {}
-
+        res.write(
+          Buffer.from(value)
+        );
       }
 
-      return res.end();
-    }
+      res.end();
+    };
 
-
-    const buffer =
-      Buffer.from(
-        await response.arrayBuffer()
-      );
-
-    return res.end(buffer);
+    await pump();
 
   } catch (error) {
-
-    console.error("PROXY ERROR:", error);
-
-    if (error.name === "AbortError") {
-      return res.status(504).json({
-        success: false,
-        error: "Media download timed out."
-      });
-    }
+    console.error("Proxy error:", error);
 
     if (!res.headersSent) {
       return res.status(500).json({
         success: false,
         error:
           error.message ||
-          "Unable to download media."
+          "Unable to proxy media."
       });
     }
 
@@ -476,18 +481,12 @@ app.get("/proxy", async (req, res) => {
   }
 });
 
+// --------------------------------------------------
+// START
+// --------------------------------------------------
 
-/* =========================
-   VERCEL EXPORT
-========================= */
-
-/*
-  IMPORTANT:
-
-  Do NOT use app.listen() here.
-
-  Vercel runs Express as a serverless
-  function.
-*/
-
-module.exports = app;
+app.listen(PORT, () => {
+  console.log(
+    `VideoSaver API running on port ${PORT}`
+  );
+});
