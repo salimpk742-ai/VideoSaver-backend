@@ -4,13 +4,7 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 
-
-// ===============================
-// CORS
-// ===============================
-
 app.use((req, res, next) => {
-
   const allowedOrigins = [
     "https://salimpk742-ai.github.io",
     "https://video-saver-orcin.vercel.app"
@@ -19,10 +13,7 @@ app.use((req, res, next) => {
   const origin = req.headers.origin;
 
   if (allowedOrigins.includes(origin)) {
-    res.setHeader(
-      "Access-Control-Allow-Origin",
-      origin
-    );
+    res.setHeader("Access-Control-Allow-Origin", origin);
   }
 
   res.setHeader(
@@ -42,73 +33,50 @@ app.use((req, res, next) => {
   next();
 });
 
-
 app.use(express.json());
 
 
-// ===============================
 // HOME
-// ===============================
-
 app.get("/", (req, res) => {
-
   res.json({
     name: "VideoSaver API",
     status: "online",
     service: "ReelGrab"
   });
-
 });
 
 
-// ===============================
 // HEALTH
-// ===============================
-
 app.get("/health", (req, res) => {
-
   res.json({
     status: "ok",
     service: "ReelGrab",
     apiKeyRequired: false
   });
-
 });
 
 
-// ===============================
 // DOWNLOAD
-// ===============================
-
 app.get("/download", async (req, res) => {
-
   try {
 
     const url = req.query.url;
 
     if (!url) {
-
       return res.status(400).json({
         success: false,
         error: "Video URL is required."
       });
-
     }
 
 
-    // ReelGrab API
-    const apiUrl =
-      "https://grabsocial.org/api/download";
-
-
     const response = await fetch(
-      apiUrl,
+      "https://grabsocial.org/api/download",
       {
         method: "POST",
 
         headers: {
-          "Content-Type":
-            "application/json"
+          "Content-Type": "application/json"
         },
 
         body: JSON.stringify({
@@ -118,99 +86,89 @@ app.get("/download", async (req, res) => {
     );
 
 
-    // Read body only once
-    const responseText =
-      await response.text();
-
+    const text = await response.text();
 
     let data;
 
     try {
-
-      data =
-        JSON.parse(responseText);
-
+      data = JSON.parse(text);
     } catch {
-
       return res.status(502).json({
-
         success: false,
-
-        error:
-          "ReelGrab returned an invalid response.",
-
-        reelGrabStatus:
-          response.status,
-
-        reelGrabResponse:
-          responseText
-
+        error: "ReelGrab returned invalid JSON.",
+        reelGrabStatus: response.status,
+        reelGrabResponse: text
       });
-
     }
 
 
-    // ReelGrab error
-
     if (!response.ok || data.success === false) {
-
       return res.status(
         response.status >= 400
           ? response.status
           : 422
       ).json({
-
         success: false,
-
-        reelGrabStatus:
-          response.status,
-
-        reelGrabResponse:
-          data
-
+        reelGrabStatus: response.status,
+        reelGrabResponse: data
       });
-
     }
 
 
-    // Return ReelGrab result directly
+    // Keep only links that actually contain a URL.
+    const validLinks = Array.isArray(data.downloadLinks)
+      ? data.downloadLinks.filter(
+          link =>
+            link &&
+            typeof link.url === "string" &&
+            link.url.trim() !== ""
+        )
+      : [];
 
-    return res.json(data);
+
+    // ReelGrab found the media but did not
+    // provide an actual downloadable file.
+    if (validLinks.length === 0) {
+      return res.status(502).json({
+        success: false,
+        error:
+          "The video was detected, but ReelGrab did not return a downloadable file.",
+        platform: data.platform || null,
+        title: data.title || null,
+        downloadLinks: data.downloadLinks || []
+      });
+    }
+
+
+    return res.json({
+      success: true,
+      title: data.title || "",
+      thumbnail: data.thumbnail || "",
+      duration: data.duration || null,
+      author: data.author || "",
+      platform: data.platform || "",
+      pageUrl: data.pageUrl || url,
+      caption: data.caption || null,
+      downloadLinks: validLinks
+    });
 
 
   } catch (error) {
 
-    console.error(
-      "Download error:",
-      error
-    );
+    console.error("Download error:", error);
 
     return res.status(500).json({
-
       success: false,
-
       error:
         error.message ||
         "Unable to process video."
-
     });
-
   }
-
 });
 
 
-// ===============================
-// START SERVER
-// ===============================
-
-app.listen(
-  PORT,
-  () => {
-
-    console.log(
-      `VideoSaver API running on port ${PORT}`
-    );
-
-  }
-);
+app.listen(PORT, () => {
+  console.log(
+    `VideoSaver API running on port ${PORT}`
+  );
+});
