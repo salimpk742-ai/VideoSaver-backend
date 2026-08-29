@@ -1,21 +1,24 @@
+```javascript
 const express = require("express");
-const { Readable } = require("stream");
 
 const app = express();
 
 const PORT = process.env.PORT || 3000;
 
+const GRABSOCIAL_API =
+  "https://grabsocial.org/api/download";
 
-// ==========================================
+
+// ======================================================
 // CORS
-// ==========================================
+// ======================================================
+
+const allowedOrigins = [
+  "https://salimpk742-ai.github.io",
+  "https://video-saver-orcin.vercel.app"
+];
 
 app.use((req, res, next) => {
-
-  const allowedOrigins = [
-    "https://salimpk742-ai.github.io",
-    "https://video-saver-orcin.vercel.app"
-  ];
 
   const origin = req.headers.origin;
 
@@ -28,7 +31,7 @@ app.use((req, res, next) => {
 
   res.setHeader(
     "Access-Control-Allow-Methods",
-    "GET, POST, OPTIONS"
+    "GET, OPTIONS"
   );
 
   res.setHeader(
@@ -38,7 +41,12 @@ app.use((req, res, next) => {
 
   res.setHeader(
     "Access-Control-Expose-Headers",
-    "Content-Length, Content-Range, Accept-Ranges, Content-Type"
+    "Content-Length, Content-Range, Accept-Ranges, Content-Type, Content-Disposition"
+  );
+
+  res.setHeader(
+    "Access-Control-Max-Age",
+    "86400"
   );
 
   if (req.method === "OPTIONS") {
@@ -46,31 +54,31 @@ app.use((req, res, next) => {
   }
 
   next();
-
 });
 
 
 app.use(express.json());
 
 
-// ==========================================
+// ======================================================
 // HOME
-// ==========================================
+// ======================================================
 
 app.get("/", (req, res) => {
 
   res.json({
     name: "VideoSaver API",
     status: "online",
-    service: "ReelGrab"
+    service: "ReelGrab",
+    proxyEnabled: true
   });
 
 });
 
 
-// ==========================================
+// ======================================================
 // HEALTH
-// ==========================================
+// ======================================================
 
 app.get("/health", (req, res) => {
 
@@ -84,15 +92,18 @@ app.get("/health", (req, res) => {
 });
 
 
-// ==========================================
-// REELGRAB DOWNLOAD INFORMATION
-// ==========================================
+// ======================================================
+// GET VIDEO INFORMATION
+// ======================================================
 
 app.get("/download", async (req, res) => {
 
   try {
 
-    const url = req.query.url;
+    const url =
+      typeof req.query.url === "string"
+        ? req.query.url.trim()
+        : "";
 
     if (!url) {
 
@@ -104,13 +115,45 @@ app.get("/download", async (req, res) => {
     }
 
 
+    // Basic URL validation
+    let parsedUrl;
+
+    try {
+
+      parsedUrl = new URL(url);
+
+    } catch {
+
+      return res.status(400).json({
+        success: false,
+        error: "Invalid video URL."
+      });
+
+    }
+
+
+    if (
+      parsedUrl.protocol !== "http:" &&
+      parsedUrl.protocol !== "https:"
+    ) {
+
+      return res.status(400).json({
+        success: false,
+        error: "Only HTTP and HTTPS URLs are supported."
+      });
+
+    }
+
+
+    // Ask ReelGrab / GrabSocial for the media
     const response = await fetch(
-      "https://grabsocial.org/api/download",
+      GRABSOCIAL_API,
       {
         method: "POST",
 
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          "Accept": "application/json"
         },
 
         body: JSON.stringify({
@@ -120,6 +163,8 @@ app.get("/download", async (req, res) => {
     );
 
 
+    // IMPORTANT:
+    // Read the response body ONLY ONCE.
     const text =
       await response.text();
 
@@ -144,7 +189,7 @@ app.get("/download", async (req, res) => {
           response.status,
 
         reelGrabResponse:
-          text
+          text.substring(0, 1000)
 
       });
 
@@ -164,6 +209,10 @@ app.get("/download", async (req, res) => {
 
         success: false,
 
+        error:
+          data.error ||
+          "Unable to retrieve this video.",
+
         reelGrabStatus:
           response.status,
 
@@ -175,29 +224,30 @@ app.get("/download", async (req, res) => {
     }
 
 
-    const validLinks =
+    const downloadLinks =
       Array.isArray(data.downloadLinks)
-
-        ? data.downloadLinks.filter(
-            link =>
-              link &&
-              typeof link.url === "string" &&
-              link.url.trim() !== ""
-          )
-
+        ? data.downloadLinks
         : [];
 
 
-    if (
-      validLinks.length === 0
-    ) {
+    // Keep only actual URLs
+    const validLinks =
+      downloadLinks.filter(
+        link =>
+          link &&
+          typeof link.url === "string" &&
+          link.url.trim() !== ""
+      );
+
+
+    if (validLinks.length === 0) {
 
       return res.status(502).json({
 
         success: false,
 
         error:
-          "The video was detected, but ReelGrab did not return a downloadable file.",
+          "The video was detected, but no downloadable file was returned.",
 
         platform:
           data.platform || null,
@@ -206,12 +256,20 @@ app.get("/download", async (req, res) => {
           data.title || null,
 
         downloadLinks:
-          data.downloadLinks || []
+          downloadLinks
 
       });
 
     }
 
+
+    // Return information to frontend.
+    //
+    // IMPORTANT:
+    // We return the original media URL to the frontend
+    // only as an internal value used to construct /proxy.
+    //
+    // The frontend will NEVER navigate directly to it.
 
     return res.json({
 
@@ -266,172 +324,151 @@ app.get("/download", async (req, res) => {
 });
 
 
-// ==========================================
-// VIDEO PROXY / STREAM
-// ==========================================
+// ======================================================
+// MEDIA PROXY
+// ======================================================
 //
-// The frontend will use:
+// Browser requests:
 //
-// /proxy?url=THE_TIKTOK_URL
+// /proxy?url=MEDIA_URL
 //
-// Instead of opening TikTok directly,
-// our Vercel backend streams the file.
+// Server fetches MEDIA_URL.
 //
-// ==========================================
+// Browser NEVER navigates directly to TikTok/Instagram.
+// ======================================================
 
 app.get("/proxy", async (req, res) => {
 
   try {
 
     const mediaUrl =
-      req.query.url;
+      typeof req.query.url === "string"
+        ? req.query.url.trim()
+        : "";
 
 
     if (!mediaUrl) {
 
       return res.status(400).json({
-
         success: false,
-
-        error:
-          "Media URL is required."
-
+        error: "Media URL is required."
       });
 
     }
 
 
-    // Make sure this is actually a URL.
-    let parsedUrl;
+    let parsedMediaUrl;
 
     try {
 
-      parsedUrl =
+      parsedMediaUrl =
         new URL(mediaUrl);
 
     } catch {
 
       return res.status(400).json({
-
         success: false,
-
-        error:
-          "Invalid media URL."
-
+        error: "Invalid media URL."
       });
 
     }
 
 
     if (
-      parsedUrl.protocol !== "https:" &&
-      parsedUrl.protocol !== "http:"
+      parsedMediaUrl.protocol !== "http:" &&
+      parsedMediaUrl.protocol !== "https:"
     ) {
 
       return res.status(400).json({
-
         success: false,
-
-        error:
-          "Only HTTP and HTTPS media URLs are supported."
-
+        error: "Invalid media URL protocol."
       });
 
     }
 
 
-    // ======================================
-    // REQUEST HEADERS
-    // ======================================
+    // Forward Range header if the browser sends one.
+    const requestHeaders = {
 
-    const headers = {
       "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+
+      "Accept":
+        "video/mp4,video/*,audio/*,*/*;q=0.8",
+
+      "Referer":
+        parsedMediaUrl.origin + "/"
+
     };
 
 
-    // Forward mobile/browser range requests.
     if (req.headers.range) {
 
-      headers.Range =
+      requestHeaders.Range =
         req.headers.range;
 
     }
 
 
-    // ======================================
-    // FETCH MEDIA
-    // ======================================
-
-    const upstream =
+    const mediaResponse =
       await fetch(
         mediaUrl,
         {
           method: "GET",
-          headers
+          headers: requestHeaders,
+          redirect: "follow"
         }
       );
 
 
-    if (!upstream.ok) {
+    if (!mediaResponse.ok) {
 
       return res.status(
-        upstream.status
+        mediaResponse.status
       ).json({
 
         success: false,
 
         error:
-          "The media server rejected the download.",
-
-        upstreamStatus:
-          upstream.status
+          "The media server returned HTTP " +
+          mediaResponse.status
 
       });
 
     }
 
 
-    // ======================================
-    // COPY IMPORTANT HEADERS
-    // ======================================
+    // --------------------------------------------------
+    // Response headers
+    // --------------------------------------------------
 
     const contentType =
-      upstream.headers.get(
+      mediaResponse.headers.get(
         "content-type"
-      );
+      ) || "video/mp4";
+
 
     const contentLength =
-      upstream.headers.get(
+      mediaResponse.headers.get(
         "content-length"
       );
 
+
     const contentRange =
-      upstream.headers.get(
+      mediaResponse.headers.get(
         "content-range"
       );
 
-    const acceptRanges =
-      upstream.headers.get(
-        "accept-ranges"
-      );
+
+    res.status(
+      mediaResponse.status
+    );
 
 
-    if (contentType) {
-
-      res.setHeader(
-        "Content-Type",
-        contentType
-      );
-
-    } else {
-
-      res.setHeader(
-        "Content-Type",
-        "video/mp4"
-      );
-
-    }
+    res.setHeader(
+      "Content-Type",
+      contentType
+    );
 
 
     if (contentLength) {
@@ -454,97 +491,87 @@ app.get("/proxy", async (req, res) => {
     }
 
 
-    if (acceptRanges) {
-
-      res.setHeader(
-        "Accept-Ranges",
-        acceptRanges
-      );
-
-    } else {
-
-      res.setHeader(
-        "Accept-Ranges",
-        "bytes"
-      );
-
-    }
+    res.setHeader(
+      "Accept-Ranges",
+      "bytes"
+    );
 
 
-    // Tell browser to download rather
-    // than navigate to the media URL.
-
+    // Force download instead of opening TikTok/Instagram
     res.setHeader(
       "Content-Disposition",
-      'attachment; filename="videosaver-video.mp4"'
+      'attachment; filename="VideoSaver-video.mp4"'
     );
 
 
-    res.setHeader(
-      "Cache-Control",
-      "no-store"
-    );
+    // --------------------------------------------------
+    // Stream response
+    // --------------------------------------------------
 
+    if (!mediaResponse.body) {
 
-    // ======================================
-    // STATUS
-    // ======================================
-
-    if (
-      upstream.status === 206
-    ) {
-
-      res.status(206);
-
-    } else {
-
-      res.status(200);
-
-    }
-
-
-    // ======================================
-    // STREAM MEDIA
-    // ======================================
-
-    if (
-      !upstream.body
-    ) {
-
-      return res.end();
-
-    }
-
-
-    const nodeStream =
-      Readable.fromWeb(
-        upstream.body
-      );
-
-
-    nodeStream.on(
-      "error",
-      error => {
-
-        console.error(
-          "Media stream error:",
-          error
+      const buffer =
+        Buffer.from(
+          await mediaResponse.arrayBuffer()
         );
 
-        if (!res.headersSent) {
+      return res.end(buffer);
 
-          res.status(500);
+    }
 
+
+    // Convert Web ReadableStream into Node stream
+    const reader =
+      mediaResponse.body.getReader();
+
+
+    try {
+
+      while (true) {
+
+        const {
+          done,
+          value
+        } =
+          await reader.read();
+
+
+        if (done) {
+          break;
         }
 
-        res.end();
+
+        res.write(
+          Buffer.from(value)
+        );
 
       }
-    );
 
+      res.end();
 
-    nodeStream.pipe(res);
+    } catch (streamError) {
 
+      console.error(
+        "Proxy streaming error:",
+        streamError
+      );
+
+      if (!res.headersSent) {
+
+        return res.status(502).json({
+
+          success: false,
+
+          error:
+            "Media streaming failed."
+
+        });
+
+      }
+
+      res.end();
+
+    }
 
   } catch (error) {
 
@@ -568,25 +595,20 @@ app.get("/proxy", async (req, res) => {
 
     }
 
-
-    res.end();
-
   }
 
 });
 
 
-// ==========================================
+// ======================================================
 // START SERVER
-// ==========================================
+// ======================================================
 
-app.listen(
-  PORT,
-  () => {
+app.listen(PORT, () => {
 
-    console.log(
-      `VideoSaver API running on port ${PORT}`
-    );
+  console.log(
+    `VideoSaver API running on port ${PORT}`
+  );
 
-  }
-);
+});
+```
