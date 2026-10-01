@@ -10,15 +10,17 @@ const SNAPANY_API_KEY = process.env.SNAPANY_API_KEY;
 // --------------------------------------------------
 
 const allowedOrigins = [
-  "https://salimpk742-ai.github.io",
-  "https://video-saver-orcin.vercel.app"
+  "https://videosaver.live",
+  "https://www.videosaver.live",
+  "https://videosaver-nu.vercel.app",
+  "https://salimpk742-ai.github.io"
 ];
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
 
-  if (allowedOrigins.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
+  if (!origin || allowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin || "*");
   }
 
   res.setHeader(
@@ -485,8 +487,10 @@ app.get("/proxy", async (req, res) => {
 // START
 // --------------------------------------------------
 
-app.listen(PORT, () => {
-  console.log(
-    `VideoSaver API running on port ${PORT}`
-  );
-});
+module.exports = app;
+
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`VideoSaver API running on port ${PORT}`);
+  });
+}
